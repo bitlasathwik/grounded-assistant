@@ -1,0 +1,255 @@
+import re
+from pathlib import Path
+from sentence_transformers import SentenceTransformer, util
+
+class TokenCounter:
+    """Simulates token counting for cost measurement (no API key needed)"""
+    
+    def __init__(self):
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_queries = 0
+        self.off_topic_count = 0
+        self.unsafe_count = 0
+        self.allowed_count = 0
+        
+    def count_tokens(self, text):
+        """
+        Simulates token counting.
+        Real tokenizers vary, but ~4 characters per token is a common estimate.
+        """
+        if not text:
+            return 0
+        # Rough estimate: 4 characters ≈ 1 token
+        return max(1, len(text) // 4)
+    
+    def add_query(self, user_input, response=""):
+        """Track a query and its response"""
+        self.total_queries += 1
+        input_tokens = self.count_tokens(user_input)
+        output_tokens = self.count_tokens(response) if response else 0
+        
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        
+        return input_tokens, output_tokens
+    
+    def add_guardrail_result(self, result):
+        """Track guardrail decisions"""
+        if result == "allowed":
+            self.allowed_count += 1
+        elif result == "off_topic":
+            self.off_topic_count += 1
+        elif result == "unsafe":
+            self.unsafe_count += 1
+    
+    def get_cost_estimate(self, input_cost_per_1k=0.002, output_cost_per_1k=0.008):
+        """
+        Estimate cost using GPT-4-mini pricing (as of 2024)
+        - Input: $0.002 per 1K tokens
+        - Output: $0.008 per 1K tokens
+        """
+        input_cost = (self.total_input_tokens / 1000) * input_cost_per_1k
+        output_cost = (self.total_output_tokens / 1000) * output_cost_per_1k
+        return input_cost + output_cost
+    
+    def get_stats(self):
+        """Get usage statistics"""
+        return {
+            "total_queries": self.total_queries,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_input_tokens + self.total_output_tokens,
+            "allowed_queries": self.allowed_count,
+            "off_topic_queries": self.off_topic_count,
+            "unsafe_queries": self.unsafe_count,
+            "estimated_cost_usd": self.get_cost_estimate()
+        }
+    
+    def print_stats(self):
+        """Print usage statistics in a readable format"""
+        stats = self.get_stats()
+        print("\n" + "="*50)
+        print("📊 USAGE STATISTICS")
+        print("="*50)
+        print(f"Total queries processed: {stats['total_queries']}")
+        print(f"  ├─ Allowed: {stats['allowed_queries']}")
+        print(f"  ├─ Off-topic: {stats['off_topic_queries']}")
+        print(f"  └─ Unsafe: {stats['unsafe_queries']}")
+        print("-"*50)
+        print(f"Input tokens: {stats['total_input_tokens']}")
+        print(f"Output tokens: {stats['total_output_tokens']}")
+        print(f"Total tokens: {stats['total_tokens']}")
+        print("-"*50)
+        print(f"💵 Estimated cost: ${stats['estimated_cost_usd']:.6f}")
+        print("="*50 + "\n")
+
+class GroundedAssistant:
+    def __init__(self):
+        """Initialize the assistant with safety and topic guardrails."""
+        self.guardrails_triggered = []
+        self.off_topic_threshold = 0.5  # Lower = more strict
+        self.unsafe_keywords = [
+            "hack", "exploit", "bypass", "illegal", "steal", "cheat",
+            "crack", "password", "credit card", "ssn", "identity theft",
+            "malware", "virus", "attack", "harm", "kill", "destroy",
+            "override", "jailbreak", "prompt injection", "porn", "nsfw"
+        ]
+        
+        # Initialize token counter
+        self.token_counter = TokenCounter()
+        
+        # Load the knowledge base
+        self.knowledge_path = Path("documents/ai_guide.txt")
+        self.knowledge_content = self.load_knowledge()
+        
+        # Load embedding model for topic detection
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        
+        # Create embeddings for knowledge content
+        self.knowledge_embeddings = None
+        if self.knowledge_content:
+            self.knowledge_embeddings = self.model.encode(self.knowledge_content, convert_to_tensor=True)
+    
+    def load_knowledge(self):
+        """Load and return the content from the AI guide document."""
+        try:
+            if self.knowledge_path.exists():
+                content = self.knowledge_path.read_text(encoding='utf-8')
+                # Split into sections by numbered items or double newlines
+                sections = re.split(r'\n\s*\n', content)
+                # Remove empty sections and strip whitespace
+                sections = [s.strip() for s in sections if s.strip()]
+                return sections
+            else:
+                print(f"Warning: {self.knowledge_path} not found.")
+                return []
+        except Exception as e:
+            print(f"Error loading knowledge: {e}")
+            return []
+    
+    def is_unsafe(self, query):
+        """Check if the query contains unsafe content."""
+        query_lower = query.lower()
+        for keyword in self.unsafe_keywords:
+            if keyword in query_lower:
+                return True
+        return False
+    
+    def is_allowed_topic(self, query):
+        """Check if the query is relevant to the AI Learning Guide topics."""
+        if not self.knowledge_content or self.knowledge_embeddings is None:
+            # If no knowledge loaded, allow all topics (but still check unsafe)
+            return True
+        
+        # Encode the user query
+        query_embedding = self.model.encode(query, convert_to_tensor=True)
+        
+        # Calculate cosine similarity with knowledge base sections
+        similarities = util.cos_sim(query_embedding, self.knowledge_embeddings)[0]
+        
+        # Get the highest similarity score
+        max_similarity = similarities.max().item()
+        
+        # Allow if similar enough to the knowledge base
+        return max_similarity >= self.off_topic_threshold
+    
+    def process_query(self, query, verbose=False):
+        """
+        Process a user query with guardrails.
+        Returns: (response, guardrail_result, input_tokens, output_tokens)
+        """
+        # Record input tokens
+        input_tokens = self.token_counter.count_tokens(query)
+        
+        # Step 1: Check for unsafe content
+        if self.is_unsafe(query):
+            guardrail_result = "unsafe"
+            self.token_counter.add_guardrail_result(guardrail_result)
+            response = "I cannot respond to this query as it contains unsafe content."
+            output_tokens = self.token_counter.count_tokens(response)
+            self.token_counter.add_query(query, response)
+            return response, guardrail_result, input_tokens, output_tokens
+        
+        # Step 2: Check if the topic is allowed
+        if not self.is_allowed_topic(query):
+            guardrail_result = "off_topic"
+            self.token_counter.add_guardrail_result(guardrail_result)
+            response = "I can only answer questions about AI, Machine Learning, and related topics from the AI Learning Guide."
+            output_tokens = self.token_counter.count_tokens(response)
+            self.token_counter.add_query(query, response)
+            return response, guardrail_result, input_tokens, output_tokens
+        
+        # Step 3: Topic is allowed - generate a response
+        guardrail_result = "allowed"
+        self.token_counter.add_guardrail_result(guardrail_result)
+        response = self.generate_response(query)
+        output_tokens = self.token_counter.count_tokens(response)
+        self.token_counter.add_query(query, response)
+        
+        if verbose:
+            print(f"\nInput tokens: {input_tokens}")
+            print(f"Output tokens: {output_tokens}")
+            print(f"Total tokens: {input_tokens + output_tokens}")
+        
+        return response, guardrail_result, input_tokens, output_tokens
+    
+    def generate_response(self, query):
+        """
+        Generate a response based on the AI Learning Guide content.
+        This is a simple retrieval-based response (no API needed).
+        """
+        if not self.knowledge_content:
+            return "I'm sorry, I don't have the AI Learning Guide loaded."
+        
+        # Find the most relevant section
+        query_embedding = self.model.encode(query, convert_to_tensor=True)
+        similarities = util.cos_sim(query_embedding, self.knowledge_embeddings)[0]
+        best_idx = similarities.argmax().item()
+        best_score = similarities[best_idx].item()
+        
+        # If similarity is too low, give a general response
+        if best_score < 0.3:
+            return "I can help you with topics about AI, Machine Learning, Generative AI, LLMs, RAG, Embeddings, Chunking, Prompt Engineering, Structured Output, or AI Safety. Could you please be more specific about what you'd like to know?"
+        
+        # Return the most relevant section
+        response = f"Based on the AI Learning Guide:\n\n{self.knowledge_content[best_idx]}"
+        
+        # Add helpful prompt for follow-up if the similarity is moderate
+        if best_score < 0.6:
+            response += "\n\nIs there a specific aspect of this topic you'd like to explore further?"
+        
+        return response
+    
+    def print_usage_stats(self):
+        """Print usage statistics"""
+        self.token_counter.print_stats()
+
+
+# Example usage
+if __name__ == "__main__":
+    assistant = GroundedAssistant()
+    
+    print("AI Learning Assistant with Guardrails")
+    print("=" * 40)
+    
+    # Test queries
+    test_queries = [
+        "What is artificial intelligence?",  # Allowed
+        "Tell me about machine learning",  # Allowed
+        "What are embeddings in NLP?",  # Allowed
+        "How to hack a computer?",  # Unsafe
+        "What's the weather today?",  # Off-topic
+        "Explain RAG in AI",  # Allowed
+        "How to steal data?",  # Unsafe
+        "Tell me about cooking recipes",  # Off-topic
+    ]
+    
+    for query in test_queries:
+        print(f"\n👤 User: {query}")
+        response, result, in_tokens, out_tokens = assistant.process_query(query, verbose=True)
+        print(f"🤖 Assistant: {response[:100]}..." if len(response) > 100 else f"🤖 Assistant: {response}")
+        print(f"🔒 Guardrail: {result.upper()} | Tokens: {in_tokens} in, {out_tokens} out")
+    
+    # Print usage statistics
+    assistant.print_usage_stats()
