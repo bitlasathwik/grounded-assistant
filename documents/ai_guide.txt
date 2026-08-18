@@ -1,0 +1,21 @@
+AI Learning Guide
+
+Artificial Intelligence (AI) is the field of creating computer systems that can perform tasks that normally require human intelligence.
+
+Machine learning is a branch of AI where computers learn patterns from data instead of being explicitly programmed for every task.
+
+Generative AI is a type of AI that can create new content such as text, images, audio, video, and code.
+
+Large language models are AI models trained on large amounts of text. They can understand and generate natural language.
+
+Retrieval-Augmented Generation (RAG) combines information retrieval with language generation. A RAG system retrieves relevant information from documents before producing an answer.
+
+Embeddings are numerical representations of text that capture semantic meaning. They are useful for finding similar pieces of information.
+
+Chunking means splitting a large document into smaller pieces so that a retrieval system can find relevant information more efficiently.
+
+Prompt engineering is the process of designing and improving instructions given to an AI model to produce better results.
+
+Structured output means requiring an AI model to return information in a predictable format such as JSON.
+
+AI safety includes designing systems that avoid harmful, unsafe, or inappropriate responses and stay within their intended purpose.
